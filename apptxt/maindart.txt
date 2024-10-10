@@ -1,0 +1,427 @@
+import 'dart:convert';
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:video_player/video_player.dart';
+import 'package:http/http.dart' as http;
+import 'package:video_thumbnail/video_thumbnail.dart';
+import 'package:path_provider/path_provider.dart';
+
+void main() {
+  runApp(MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Robo Detector App',
+      home: HomeScreen(),
+    );
+  }
+}
+
+class HomeScreen extends StatefulWidget {
+  @override
+  _HomeScreenState createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  VideoPlayerController? _controller;
+  Map<String, dynamic>? _metadata = {
+    'robo_id': '4372',
+    'hora': '12:17h',
+    'dia': '14/08/2024',
+    'camara': '1',
+  };
+  String? _validationMessage;
+  bool _videoLoaded = false;
+  bool _questionsVisible = true; // Controlar la visibilidad de las preguntas
+  int _currentStep = 0; // Variable para rastrear las preguntas
+  List<Map<String, dynamic>> registros = []; // Lista para almacenar registros
+  bool _esRobo = false;
+  bool _hurtoEvitado = false;
+  String _selectedCategory = '';
+  String _inputPrice = '';
+  bool _noMoreVideos = false; // Indica si ya no hay más videos por validar
+
+  // Dirección del servidor local con la carpeta de videos
+  final String serverUrl = 'http://192.168.1.138:8000/'; // Cambia a la IP de tu servidor
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFirstVideoFromServer();
+  }
+
+  // Cargar el primer video disponible en el servidor
+  Future<void> _loadFirstVideoFromServer() async {
+    try {
+      final response = await http.get(Uri.parse(serverUrl));
+      if (response.statusCode == 200) {
+        final files = _extractVideoFiles(response.body);
+        if (files.isNotEmpty) {
+          String firstVideoUrl = serverUrl + files.first;
+          print('Cargando video: $firstVideoUrl');
+          _controller = VideoPlayerController.network(firstVideoUrl)
+            ..initialize().then((_) {
+              setState(() {
+                _videoLoaded = true;
+                _controller!.setVolume(0.0); // Desactivar audio
+                _controller!.play();
+                _controller!.setLooping(true); // Hacer que el video se repita en bucle
+              });
+            });
+        } else {
+          setState(() {
+            _videoLoaded = false;
+            _noMoreVideos = true; // No hay más videos disponibles
+          });
+        }
+      } else {
+        setState(() {
+          _validationMessage = 'Error al conectar con el servidor: ${response.statusCode}';
+        });
+      }
+    } catch (e) {
+      setState(() {
+        _validationMessage = 'Error al cargar el video: $e';
+      });
+    }
+  }
+
+  List<String> _extractVideoFiles(String html) {
+    final List<String> videoFiles = [];
+    final regex = RegExp(r'href="([^"]+)"');
+    final matches = regex.allMatches(html);
+
+    for (var match in matches) {
+      final fileName = match.group(1);
+      if (fileName != null && (fileName.endsWith('.mp4') || fileName.endsWith('.mkv'))) {
+        videoFiles.add(fileName);
+      }
+    }
+    return videoFiles;
+  }
+
+  // Generar una miniatura del video
+  Future<String?> _generateThumbnail(String videoUrl) async {
+    try {
+      final thumbnailPath = await VideoThumbnail.thumbnailFile(
+        video: videoUrl,
+        thumbnailPath: (await getTemporaryDirectory()).path, // Guardar en el directorio temporal
+        imageFormat: ImageFormat.JPEG,
+        maxHeight: 64, // Altura de la miniatura
+        quality: 75, // Calidad de la miniatura
+      );
+      return thumbnailPath;
+    } catch (e) {
+      print('Error generando miniatura: $e');
+      return null;
+    }
+  }
+
+  // Pasar a la siguiente pregunta o paso
+  void _nextStep() {
+    setState(() {
+      _currentStep++;
+      if (_currentStep > 3) {
+        _questionsVisible = false; // Oculta las preguntas cuando se terminan
+        _controller!.setLooping(false); // Detiene el bucle cuando las preguntas se terminan
+        // Guardar el registro
+        _guardarRegistro();
+        // Verificar si hay más videos
+        _checkForNextVideo();
+      }
+    });
+  }
+
+  // Guardar la información del registro actual
+  void _guardarRegistro() async {
+    final String? thumbnailPath = await _generateThumbnail(_controller!.dataSource);
+
+    final registro = {
+      'robo_id': _metadata?['robo_id'] ?? 'N/A',
+      'esRobo': _esRobo ? 'Es un robo' : 'No es un robo',
+      'hurtoEvitado': _hurtoEvitado ? 'Se ha captado al ladrón' : 'No se ha captado al ladrón',
+      'categoria': _selectedCategory,
+      'precio': _inputPrice,
+      'thumbnail': thumbnailPath ?? '', // Guardar la ruta de la miniatura
+    };
+    registros.add(registro);
+    _removeProcessedVideo(); // Eliminar el video procesado
+  }
+
+  // Verificar si hay más videos disponibles, si no, mostrar mensaje
+  void _checkForNextVideo() async {
+    final response = await http.get(Uri.parse(serverUrl));
+    if (response.statusCode == 200) {
+      final files = _extractVideoFiles(response.body);
+      if (files.isNotEmpty) {
+        setState(() {
+          // Cargar el siguiente video
+          _currentStep = 0;
+          _questionsVisible = true;
+          _videoLoaded = false;
+          _loadFirstVideoFromServer(); // Cargar el siguiente video disponible
+        });
+      } else {
+        setState(() {
+          _noMoreVideos = true; // No hay más videos
+        });
+      }
+    } else {
+      setState(() {
+        _validationMessage = 'Error al conectar con el servidor: ${response.statusCode}';
+      });
+    }
+  }
+
+  // Eliminar el video procesado de la lista de archivos o moverlo
+  void _removeProcessedVideo() {
+    // Aquí puedes implementar la lógica para mover el video procesado
+    // o eliminarlo de la lista de archivos.
+  }
+
+  // Mostrar preguntas
+  Widget _buildStep() {
+    switch (_currentStep) {
+      case 0:
+        return _buildEsRoboStep();
+      case 1:
+        return _buildHurtoEvitadoStep();
+      case 2:
+        return _buildProductoStep();
+      case 3:
+        return _buildPrecioStep();
+      default:
+        return Container(); // Al final, nada más que mostrar
+    }
+  }
+
+  Widget _buildEsRoboStep() {
+    return Column(
+      children: [
+        Text('¿Es un robo?', style: TextStyle(fontSize: 24)),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            IconButton(
+              icon: Icon(Icons.check_circle, color: Colors.black, size: 50),
+              onPressed: () {
+                _esRobo = true;
+                _nextStep();
+              },
+            ),
+            IconButton(
+              icon: Icon(Icons.cancel, color: Colors.black, size: 50),
+              onPressed: () {
+                _esRobo = false;
+                _nextStep();
+              },
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildHurtoEvitadoStep() {
+    return Column(
+      children: [
+        Text('¿Hurto evitado?', style: TextStyle(fontSize: 24)),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            IconButton(
+              icon: Icon(Icons.check_circle, color: Colors.black, size: 50),
+              onPressed: () {
+                _hurtoEvitado = true;
+                _nextStep();
+              },
+            ),
+            IconButton(
+              icon: Icon(Icons.cancel, color: Colors.black, size: 50),
+              onPressed: () {
+                _hurtoEvitado = false;
+                _nextStep();
+              },
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildProductoStep() {
+    return Column(
+      children: [
+        Text('¿Producto?', style: TextStyle(fontSize: 24)),
+        DropdownButton<String>(
+          value: _selectedCategory.isEmpty ? null : _selectedCategory,
+          hint: Text("Seleccione una categoría"),
+          onChanged: (String? newValue) {
+            setState(() {
+              _selectedCategory = newValue!;
+              _nextStep();
+            });
+          },
+          items: <String>['Cosmética', 'Comida', 'Bebida']
+              .map<DropdownMenuItem<String>>((String value) {
+            return DropdownMenuItem<String>(
+              value: value,
+              child: Text(value),
+            );
+          }).toList(),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPrecioStep() {
+    return Column(
+      children: [
+        Text('¿Precio?', style: TextStyle(fontSize: 24)),
+        Padding(
+          padding: const EdgeInsets.all(8.0),
+          child: TextField(
+            keyboardType: TextInputType.number,
+            decoration: InputDecoration(
+              labelText: "Ingrese el precio (€)",
+              border: OutlineInputBorder(),
+            ),
+            onSubmitted: (value) {
+              _inputPrice = value;
+              _nextStep();
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: SafeArea(
+        child: Column(
+          children: [
+            Spacer(), // Deja espacio arriba
+            Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center, // Centra el contenido verticalmente
+                children: [
+                  if (_videoLoaded && _controller != null && _controller!.value.isInitialized)
+                    Container(
+                      padding: const EdgeInsets.all(16.0),
+                      child: AspectRatio(
+                        aspectRatio: _controller!.value.aspectRatio,
+                        child: VideoPlayer(_controller!),
+                      ),
+                    )
+                  else if (!_videoLoaded)
+                    Center(child: CircularProgressIndicator()),
+                  if (_questionsVisible) _buildStep(),
+                ],
+              ),
+            ),
+            Spacer(), // Deja espacio abajo
+            // Barra inferior con botones y fondo rosa
+            Container(
+              color: Colors.pink,
+              padding: const EdgeInsets.all(16.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                children: [
+                  IconButton(
+                    icon: Icon(Icons.warning, color: Colors.white, size: 30),
+                    onPressed: () {
+                      // Acción del botón de advertencia
+                    },
+                  ),
+                  IconButton(
+                    icon: Icon(Icons.history, color: Colors.white, size: 30),
+                    onPressed: () {
+                      // Acción del botón de historial
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => RegistroScreen(registros: registros),
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+}
+
+// Pantalla de registros
+class RegistroScreen extends StatelessWidget {
+  final List<Map<String, dynamic>> registros;
+
+  RegistroScreen({required this.registros});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Registros'),
+      ),
+      body: ListView.builder(
+        itemCount: registros.length,
+        itemBuilder: (context, index) {
+          final registro = registros[index];
+          return ListTile(
+            leading: registro['thumbnail'] != ''
+                ? Image.file(File(registro['thumbnail'])) // Mostrar miniatura del video
+                : Icon(Icons.video_library), // Icono de reserva si no hay miniatura
+            title: Text('Robo ID: ${registro['robo_id']}'),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('${registro['esRobo']}'),
+                Text('${registro['hurtoEvitado']}'),
+                Text('Categoría: ${registro['categoria']}'),
+                Text('Precio: ${registro['precio']}€'),
+              ],
+            ),
+            isThreeLine: true,
+          );
+        },
+      ),
+      bottomNavigationBar: Container(
+        color: Colors.pink,
+        padding: const EdgeInsets.all(16.0),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceAround,
+          children: [
+            IconButton(
+              icon: Icon(Icons.warning, color: Colors.white, size: 30),
+              onPressed: () {
+                // Acción del botón de advertencia
+              },
+            ),
+            IconButton(
+              icon: Icon(Icons.history, color: Colors.white, size: 30),
+              onPressed: () {
+                // Acción del botón de historial
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+

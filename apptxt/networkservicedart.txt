@@ -1,0 +1,41 @@
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+
+// URL base de tu API en Python
+final String apiUrl = 'http://192.168.1.138:8000';
+
+// Obtener lista de videos en la carpeta 'videosxver'
+Future<List<String>> fetchVideosXVer() async {
+  final response = await http.get(Uri.parse('$apiUrl/videosxver'));
+  if (response.statusCode == 200) {
+    return List<String>.from(json.decode(response.body));
+  } else {
+    throw Exception('Error al obtener los videos');
+  }
+}
+
+// Validar un video (mover de 'videosxver' a 'registros')
+Future<void> validateVideo(String fileName, Map<String, dynamic> metadata) async {
+  final response = await http.post(
+    Uri.parse('$apiUrl/validate'),
+    headers: {'Content-Type': 'application/json'},
+    body: json.encode({'file_name': fileName, 'metadata': metadata}),
+  );
+  if (response.statusCode != 200) {
+    throw Exception('Error al validar el video');
+  }
+}
+
+// Descargar video para mostrar en la app
+Future<String> downloadVideo(String fileName) async {
+  final response = await http.get(Uri.parse('$apiUrl/download/videosxver/$fileName'));
+  if (response.statusCode == 200) {
+    final directory = await getApplicationDocumentsDirectory();
+    final file = File('${directory.path}/$fileName');
+    await file.writeAsBytes(response.bodyBytes);
+    return file.path;
+  } else {
+    throw Exception('Error al descargar el video');
+  }
+}
+
